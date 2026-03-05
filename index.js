@@ -48,13 +48,15 @@ app.get('/', (req, res) => {
     res.send(`
         <body style="font-family: Arial; text-align: center; background: #e5ddd5; padding: 50px;">
             <div style="background: white; display: inline-block; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                <h1 style="color: #075e54;">WhatsApp Masivo - Modo Reporte</h1>
-                <p>Al terminar, revisa el archivo <b>reporte_envio.xlsx</b></p>
+                <h1 style="color: #075e54;">WhatsApp Masivo Pro</h1>
+                <p>Usa etiquetas como <b>{nombre}</b> o <b>{id}</b> según tus columnas.</p>
                 <form action="/upload" method="post" enctype="multipart/form-data" style="text-align: left;">
+                    <label>Archivo Excel:</label><br>
                     <input type="file" name="excelFile" accept=".xlsx, .xls, .csv" required><br><br>
-                    <textarea name="message" rows="5" style="width: 100%;" placeholder="Hola {nombre}..."></textarea><br><br>
+                    <label>Mensaje Personalizado:</label><br>
+                    <textarea name="message" rows="5" style="width: 100%;" placeholder="Hola {nombre}, tu código es {id}"></textarea><br><br>
                     <button type="submit" style="width: 100%; background: #25D366; color: white; border: none; padding: 15px; cursor: pointer; border-radius: 5px;">
-                        INICIAR Y GENERAR REPORTE
+                        INICIAR ENVÍO DINÁMICO
                     </button>
                 </form>
             </div>
@@ -68,25 +70,32 @@ app.post('/upload', upload.single('excelFile'), async (req, res) => {
         const rawData = xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
         const baseMsg = req.body.message || "Hola {nombre}";
 
-        // Lista que se irá actualizando con el estado de cada mensaje
         let reporteFinal = [];
-
-        res.send("<h3>🚀 Envío en curso. Al finalizar, busca 'reporte_envio.xlsx' en la carpeta.</h3>");
-        console.log(`--- Procesando ${rawData.length} contactos ---`);
+        res.send("<h3>🚀 Envío en curso. Revisa la consola y al finalizar busca 'reporte_envio.xlsx'.</h3>");
 
         for (let i = 0; i < rawData.length; i++) {
             let fila = rawData[i];
             
-            // Limpiar encabezados
+            // 1. Limpiar encabezados y normalizar a minúsculas para reemplazo fácil
             const rowClean = {};
-            Object.keys(fila).forEach(key => rowClean[key.toLowerCase().trim()] = fila[key]);
+            Object.keys(fila).forEach(key => {
+                rowClean[key.toLowerCase().trim()] = fila[key];
+            });
 
-            const nombre = (rowClean['nombre'] || "Sin Nombre").toString().trim();
-            const telOriginal = rowClean['telefono'];
+            // 2. Construir el mensaje dinámico
+            let mensajePersonalizado = baseMsg;
+            Object.keys(rowClean).forEach(key => {
+                // Reemplaza todas las ocurrencias de {columna} con su valor
+                const regex = new RegExp(`{${key}}`, 'gi');
+                mensajePersonalizado = mensajePersonalizado.replace(regex, rowClean[key]);
+            });
+
+            const telOriginal = rowClean['telefono'] || rowClean['tel'] || rowClean['phone'];
+            const nombreParaLog = rowClean['nombre'] || "Sin Nombre";
             let estadoEnvio = "";
 
-            if (!telOriginal || telOriginal == "") {
-                estadoEnvio = "❌ Error: Teléfono vacío";
+            if (!telOriginal) {
+                estadoEnvio = "❌ Error: Columna 'telefono' no encontrada";
             } else {
                 const numLimpio = normalizarNumero(telOriginal);
                 const chatId = `${numLimpio}@c.us`;
@@ -94,40 +103,40 @@ app.post('/upload', upload.single('excelFile'), async (req, res) => {
                 try {
                     const isRegistered = await client.isRegisteredUser(chatId);
                     if (isRegistered) {
-                        await client.sendMessage(chatId, baseMsg.replace('{nombre}', nombre));
+                        await client.sendMessage(chatId, mensajePersonalizado);
                         estadoEnvio = "✅ Enviado";
-                        console.log(`✅ ${nombre} (${numLimpio})`);
+                        console.log(`[${i+1}/${rawData.length}] Enviado a: ${nombreParaLog}`);
                     } else {
                         estadoEnvio = "❌ No tiene WhatsApp";
-                        console.log(`❌ ${numLimpio} no está registrado`);
+                        console.log(`[${i+1}/${rawData.length}] ❌ ${numLimpio} no registrado`);
                     }
                 } catch (e) {
                     estadoEnvio = "❌ Error técnico: " + e.message;
-                    console.log(`🔴 Error en ${nombre}:`, e.message);
                 }
             }
 
-            // Añadimos el resultado a nuestro reporte
+            // 3. Agregar al reporte
             reporteFinal.push({
-                nombre: nombre,
-                telefono: telOriginal,
-                resultado: estadoEnvio,
-                fecha_hora: new Date().toLocaleString()
+                ...fila, // Mantiene todas tus columnas originales en el reporte
+                resultado_envio: estadoEnvio,
+                fecha_procesado: new Date().toLocaleString()
             });
 
-            // Guardamos el Excel cada vez que procesamos una fila (por si se corta la luz)
-            guardarReporte(reporteFinal);
+            // Guardar reporte cada 5 mensajes para no saturar el disco pero mantener seguridad
+            if (i % 5 === 0 || i === rawData.length - 1) {
+                guardarReporte(reporteFinal);
+            }
 
-            // Delay aleatorio
-            await delay(Math.floor(Math.random() * 3000) + 4000);
+            // 4. Delay Ajustado: 3 a 5 segundos (3000ms a 5000ms)
+            await delay(Math.floor(Math.random() * 2000) + 3000);
         }
 
-        console.log("--- ✨ Proceso terminado. Reporte generado. ---");
-        fs.unlinkSync(req.file.path);
+        console.log("--- ✨ Proceso terminado ---");
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
 
     } catch (err) {
         console.error("🔴 Error Crítico:", err);
     }
 });
 
-app.listen(3000, () => console.log('🚀 Corriendo en http://localhost:3000'));
+app.listen(3000, () => console.log('🚀 Sistema listo en http://localhost:3000'));
